@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.DS_Store
+models/
+*.gguf
+ollama.log
+ollama.pid
+.env
+.env.local
+MiniCPM/
