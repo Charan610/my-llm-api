@@ -1,19 +1,11 @@
 {
   "rewrites": [
     {
-      "source": "/v1/models",
-      "destination": "/api/v1/models"
+      "source": "/v1/(.*)",
+      "destination": "/api/v1/$1"
     },
     {
-      "source": "/v1/chat/completions",
-      "destination": "/api/v1/chat/completions"
-    },
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
-    },
-    {
-      "source": "/(.*)",
+      "source": "/((?!api|v1).*)",
       "destination": "/index.html"
     }
   ]
