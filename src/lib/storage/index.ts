@@ -54,7 +54,7 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULT_SETTINGS: AppSettings = {
-  providerMode: 'auto',
+  providerMode: 'api',
   apiBaseUrl: 'http://127.0.0.1:11434/v1',
   apiKey: 'ollama',
   modelName: 'minicpm5-2b',
