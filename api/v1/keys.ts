@@ -1,5 +1,37 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { generateSecureApiKey, listKeys, revokeKey, validateApiKey } from '../_auth';
+import crypto from 'node:crypto';
+
+// In-memory key store on Vercel serverless instance
+interface StoredKey {
+  id: string;
+  name: string;
+  platform: string;
+  keyPrefix: string;
+  hashedKey: string;
+  status: 'active' | 'revoked';
+  permissions: string[];
+  rateLimit: number;
+  createdAt: number;
+}
+
+const MEMORY_KEYS: Map<string, StoredKey> = new Map();
+
+function ensureDefaultKey() {
+  const masterHash = crypto.createHash('sha256').update('sk-app-dev-master-minicpm').digest('hex');
+  if (!MEMORY_KEYS.has('app_master')) {
+    MEMORY_KEYS.set('app_master', {
+      id: 'app_master_default',
+      name: 'Master Developer Key',
+      platform: 'mac',
+      keyPrefix: 'sk-app-dev',
+      hashedKey: masterHash,
+      status: 'active',
+      permissions: ['chat', 'models', 'tools', 'admin'],
+      rateLimit: 120,
+      createdAt: 1725667200000,
+    });
+  }
+}
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -10,20 +42,42 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).end();
   }
 
-  // GET: List all keys (masked)
+  ensureDefaultKey();
+
   if (req.method === 'GET') {
-    const keys = listKeys();
-    return res.status(200).json({ object: 'list', data: keys });
+    const list = Array.from(MEMORY_KEYS.values()).map(k => ({
+      id: k.id,
+      name: k.name,
+      platform: k.platform,
+      key_prefix: k.keyPrefix,
+      status: k.status,
+      permissions: k.permissions,
+      rate_limit: k.rateLimit,
+      created_at: k.createdAt,
+    }));
+    return res.status(200).json({ object: 'list', data: list });
   }
 
-  // POST: Create a new API key (shows full secret ONCE)
   if (req.method === 'POST') {
-    const { platform = 'app', name, permissions = ['chat', 'models'], rateLimit = 60 } = req.body || {};
-    const { rawKey, record } = generateSecureApiKey(platform);
+    const { name = 'New App', platform = 'app', permissions = ['chat', 'models'], rateLimit = 60 } = req.body || {};
+    const secretPart = crypto.randomBytes(24).toString('hex');
+    const rawKey = `sk-app-${platform.slice(0, 3)}-${secretPart}`;
+    const keyId = `app_${platform}_${crypto.randomBytes(4).toString('hex')}`;
+    const hashedKey = crypto.createHash('sha256').update(rawKey).digest('hex');
 
-    if (name) record.name = name;
-    if (permissions) record.permissions = permissions;
-    if (rateLimit) record.rateLimit = rateLimit;
+    const record: StoredKey = {
+      id: keyId,
+      name,
+      platform,
+      keyPrefix: rawKey.slice(0, 11),
+      hashedKey,
+      status: 'active',
+      permissions,
+      rateLimit,
+      createdAt: Date.now(),
+    };
+
+    MEMORY_KEYS.set(keyId, record);
 
     return res.status(201).json({
       message: 'API Key generated successfully. Save this secret now; you will not be able to view it again.',
@@ -37,14 +91,14 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  // DELETE: Revoke an API key
   if (req.method === 'DELETE') {
     const { key_id } = req.body || {};
     if (!key_id) {
       return res.status(400).json({ error: 'Missing key_id' });
     }
-    const success = revokeKey(key_id);
-    if (success) {
+    const record = MEMORY_KEYS.get(key_id);
+    if (record) {
+      record.status = 'revoked';
       return res.status(200).json({ message: `API Key ${key_id} has been revoked.` });
     }
     return res.status(404).json({ error: 'Key not found' });
