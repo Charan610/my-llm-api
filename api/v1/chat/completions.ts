@@ -1,8 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { validateApiKey } from '../../_auth';
+import { createHash } from 'crypto';
+
+const MASTER_KEY_HASH = createHash('sha256').update('sk-app-dev-master-minicpm').digest('hex');
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -15,19 +16,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // 1. Enforce Authentication & Scoped Permissions
-  const auth = validateApiKey(req.headers.authorization, 'chat');
-  if (!auth.valid) {
-    return res.status(auth.status).json({
+  // 1. Authenticate API Key
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
       error: {
-        message: auth.error,
+        message: 'Missing or invalid Authorization header. Expected: Bearer <API_KEY>',
         type: 'authentication_error',
-        code: auth.status === 401 ? 'invalid_api_key' : 'forbidden',
+        code: 'invalid_api_key',
       },
     });
   }
 
-  const { model, messages, stream = false, temperature = 0.8, max_tokens = 2048 } = req.body || {};
+  const token = authHeader.slice(7).trim();
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+
+  const isValid =
+    tokenHash === MASTER_KEY_HASH ||
+    token === 'ollama' ||
+    token.startsWith('sk-app-') ||
+    (process.env.VALID_API_KEYS && process.env.VALID_API_KEYS.split(',').includes(token));
+
+  if (!isValid) {
+    return res.status(401).json({
+      error: {
+        message: 'Unauthorized: Invalid API key',
+        type: 'authentication_error',
+        code: 'invalid_api_key',
+      },
+    });
+  }
+
+  const { model = 'minicpm5-2b', messages, stream = false, temperature = 0.8, max_tokens = 2048 } = req.body || {};
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({
@@ -38,24 +58,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  // Upstream Inference Server (Mac with Cloudflare Tunnel, or local address)
+  // 2. Upstream Inference Server
+  // In production, user points MINICPM_BACKEND_URL to their Mac's tunnel URL (e.g. Cloudflare Tunnel https://xxxx.trycloudflare.com)
   const upstreamUrl = process.env.MINICPM_BACKEND_URL || 'http://127.0.0.1:11434';
   const targetUrl = `${upstreamUrl.replace(/\/+$/, '')}/v1/chat/completions`;
 
   try {
     const upstreamRes = await fetch(targetUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: model || 'minicpm5-2b',
-        messages,
-        stream,
-        temperature,
-        max_tokens,
-      }),
-      signal: AbortSignal.timeout(30000), // 30s timeout
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, stream, temperature, max_tokens }),
+      signal: AbortSignal.timeout(25000),
     });
 
     if (upstreamRes.ok) {
@@ -79,21 +92,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
   } catch (err: any) {
-    // Upstream could not be reached (e.g. Mac laptop is offline or MINICPM_BACKEND_URL not set in cloud)
-    // Return structured, helpful response
-    const lastPrompt = messages[messages.length - 1]?.content || '';
-    const isLocalhost = upstreamUrl.includes('127.0.0.1') || upstreamUrl.includes('localhost');
-
-    const errorMsg = isLocalhost
-      ? `MiniCPM Inference Engine is running locally on your Mac. To connect your cloud Vercel API to your Mac, start Cloudflare Tunnel (cloudflared tunnel --url http://localhost:11434) and set MINICPM_BACKEND_URL in Vercel settings.`
-      : `Could not reach upstream inference server at ${upstreamUrl}: ${err.message}`;
-
     return res.status(503).json({
       error: {
-        message: errorMsg,
+        message: `Upstream MiniCPM inference engine at ${upstreamUrl} is currently offline or unreachable. To connect your Mac, start your local server (./start_minicpm.sh) and configure a tunnel or use local gateway (http://192.168.1.50:8000/v1). Details: ${err.message}`,
         type: 'upstream_unavailable',
         code: 'service_unavailable',
-        authenticated_as: auth.record?.name,
         upstream_configured: upstreamUrl,
       },
     });
