@@ -1,39 +1,31 @@
 #!/bin/bash
-# stop_minicpm.sh - Stops the local MiniCPM inference server
+# stop_minicpm.sh - Stops local MiniCPM inference server and Authenticated API Gateway
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PID_FILE="$DIR/ollama.pid"
+GATEWAY_PID_FILE="$DIR/gateway.pid"
 
+# Stop Gateway
+if [ -f "$GATEWAY_PID_FILE" ]; then
+    PID=$(cat "$GATEWAY_PID_FILE")
+    if kill -0 "$PID" 2>/dev/null; then
+        echo "Stopping API Gateway (PID: $PID)..."
+        kill "$PID" 2>/dev/null
+    fi
+    rm -f "$GATEWAY_PID_FILE"
+fi
+
+# Stop Inference Engine
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
-        echo "Stopping MiniCPM server (PID: $PID)..."
-        kill "$PID"
-        # Wait up to 5 seconds
-        for i in {1..5}; do
-            if ! kill -0 "$PID" 2>/dev/null; then
-                break
-            fi
-            sleep 1
-        done
-        if kill -0 "$PID" 2>/dev/null; then
-            echo "Force killing PID: $PID..."
-            kill -9 "$PID" 2>/dev/null
-        fi
-        rm -f "$PID_FILE"
-        echo "✅ MiniCPM server stopped."
-        exit 0
-    else
-        echo "Server process not running. Cleaning up stale PID file."
-        rm -f "$PID_FILE"
+        echo "Stopping MiniCPM inference server (PID: $PID)..."
+        kill "$PID" 2>/dev/null
     fi
+    rm -f "$PID_FILE"
 fi
 
-# Fallback: check if any ollama serve process is running
-PIDS=$(pgrep -f "ollama serve" || true)
-if [ -n "$PIDS" ]; then
-    echo "Stopping running Ollama processes: $PIDS"
-    kill $PIDS
-    echo "✅ MiniCPM server stopped."
-else
-    echo "No running MiniCPM server found."
-fi
+# Fallbacks
+pkill -f "api_gateway.py" 2>/dev/null || true
+pkill -f "ollama serve" 2>/dev/null || true
+
+echo "✅ All MiniCPM services stopped."
